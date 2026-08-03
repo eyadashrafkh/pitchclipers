@@ -1,0 +1,11 @@
+node_modules/
+dist/
+local_data/
+model_outputs/
+tmp/
+__pycache__/
+*.pyc
+*.log
+.env
+!.env.example
+.DS_Store
