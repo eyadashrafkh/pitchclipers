@@ -3,12 +3,14 @@ import {
   AlertTriangle,
   Check,
   Clock3,
+  Download,
+  ChevronDown,
+  ChevronUp,
   FileVideo,
   Film,
   Flag,
   Loader2,
   Play,
-  Plus,
   Radio,
   RotateCcw,
   Upload,
@@ -16,14 +18,8 @@ import {
 } from "lucide-react";
 import { apiFetch, backendBaseUrl, clipPlaybackUrl, clipThumbnailUrl, isRemoteBackend, openJobEventSource, uploadMatchVideo } from "./apiClient";
 import { PitchClipersPixelLogo } from "./components/PitchClipersPixelLogo";
-
-const DEFAULT_EVENT_TYPES = [
-  { id: "goal", label: "Goal", color: "#16a34a" },
-  { id: "shot", label: "Shot", color: "#2563eb" },
-  { id: "header", label: "Header", color: "#0d9488" },
-  { id: "high_pass", label: "High pass", color: "#f59e0b" },
-  { id: "free_kick", label: "Free kick", color: "#7c3aed" },
-];
+import { EVENT_TYPES, buildClipCandidates, filterAndSortEvents } from "./eventProcessing";
+import { runFixtureProcessing } from "./fixtureAdapter";
 
 const allowedExtensions = [".mp4", ".mov", ".avi", ".mkv", ".m4v", ".webm"];
 
@@ -72,9 +68,10 @@ function parseSsePayload(event) {
 }
 
 function App() {
-  const [eventTypes, setEventTypes] = useState(DEFAULT_EVENT_TYPES);
-  const [selectedTypes, setSelectedTypes] = useState(new Set(DEFAULT_EVENT_TYPES.map((event) => event.id)));
-  const [customEventType, setCustomEventType] = useState("");
+  const appMode = import.meta.env.VITE_APP_MODE || "fixture";
+  const isFixtureMode = appMode !== "api";
+  const [eventTypes] = useState(EVENT_TYPES);
+  const [selectedTypes, setSelectedTypes] = useState(new Set(EVENT_TYPES.map((event) => event.id)));
   const [selectedFile, setSelectedFile] = useState(null);
   const [localVideoUrl, setLocalVideoUrl] = useState("");
   const [videoDuration, setVideoDuration] = useState(0);
@@ -86,6 +83,11 @@ function App() {
   const [match, setMatch] = useState(null);
   const [job, setJob] = useState(null);
   const [clips, setClips] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [threshold, setThreshold] = useState(0.5);
+  const [selectedEventId, setSelectedEventId] = useState(null);
+  const [selectedClipIds, setSelectedClipIds] = useState([]);
+  const [currentTime, setCurrentTime] = useState(0);
   const [uploadState, setUploadState] = useState("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [processingState, setProcessingState] = useState("idle");
@@ -96,11 +98,25 @@ function App() {
   const [message, setMessage] = useState("");
   const sseRef = useRef(null);
   const pollRef = useRef(null);
+  const videoRef = useRef(null);
 
   const selectedTypeList = useMemo(() => Array.from(selectedTypes), [selectedTypes]);
   const readyClips = clips.filter((clip) => clip.status === "ready");
-  const backendLabel = isRemoteBackend ? backendBaseUrl : "local Vite proxy -> 127.0.0.1:8000";
-  const canStart = Boolean(selectedFile && !fileError && selectedTypeList.length);
+  const visibleEvents = useMemo(
+    () => filterAndSortEvents(events, { selectedTypeIds: selectedTypeList, threshold }),
+    [events, selectedTypeList, threshold],
+  );
+  const fixtureClips = useMemo(() => buildClipCandidates(visibleEvents, videoDuration || match?.duration_sec || 5400), [visibleEvents, videoDuration, match]);
+  const displayClips = isFixtureMode ? fixtureClips : clips;
+  const selectedEvent = visibleEvents.find((event) => event.event_id === selectedEventId) || null;
+  const selectedClips = selectedClipIds.map((id) => displayClips.find((clip) => clip.clip_id === id)).filter(Boolean);
+  const displayDuration = videoDuration || match?.duration_sec || 5400;
+  const backendLabel = isFixtureMode ? "local fixture adapter" : isRemoteBackend ? backendBaseUrl : "local Vite proxy -> 127.0.0.1:8000";
+  const canStart = Boolean(selectedFile && !fileError && selectedTypeList.length && (!isFixtureMode || videoDuration));
+
+  useEffect(() => {
+    setSelectedClipIds((previous) => previous.filter((id) => displayClips.some((clip) => clip.clip_id === id)));
+  }, [displayClips]);
 
   useEffect(() => {
     return () => {
@@ -156,6 +172,7 @@ function App() {
       const data = await apiFetch(`/api/matches/${matchId}/clips`);
       const nextClips = Array.isArray(data) ? data : data.clips || [];
       mergeClips(nextClips);
+      if (!Array.isArray(data) && Array.isArray(data.events)) setEvents(data.events);
     } catch (error) {
       appendLog("polling_error", { message: error.message });
     }
@@ -196,6 +213,7 @@ function App() {
     if (type === "clip_ready") {
       const clip = payload.clip || payload;
       mergeClips([{ ...clip, status: clip.status || "ready", match_id: clip.match_id || activeMatchId }]);
+      if (payload.event) setEvents((previous) => [...previous, payload.event]);
       setProcessingLabel("Clip ready");
       updateProcessingProgress(payload);
     }
@@ -243,6 +261,11 @@ function App() {
     setMatch(null);
     setJob(null);
     setClips([]);
+    setEvents([]);
+    setSelectedEventId(null);
+    setSelectedClipIds([]);
+    setCurrentTime(0);
+    setVideoDuration(0);
     setUploadState("idle");
     setUploadProgress(0);
     setProcessingState("idle");
@@ -271,12 +294,110 @@ function App() {
     });
   }
 
-  function addCustomEventType() {
-    const id = customEventType.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-    if (!id || eventTypes.some((event) => event.id === id)) return;
-    setEventTypes((previous) => [...previous, { id, label: id.replaceAll("_", " "), color: "#64748b" }]);
-    setSelectedTypes((previous) => new Set([...previous, id]));
-    setCustomEventType("");
+  function seekToTime(seconds) {
+    const safeTime = Math.max(0, Math.min(displayDuration, Number(seconds) || 0));
+    if (videoRef.current) videoRef.current.currentTime = safeTime;
+    setCurrentTime(safeTime);
+  }
+
+  function selectEvent(event) {
+    setSelectedEventId(event.event_id);
+    seekToTime(event.timestamp_sec);
+  }
+
+  function selectClip(clip) {
+    const event = visibleEvents.find((item) => clip.event_ids?.includes(item.event_id));
+    if (event) setSelectedEventId(event.event_id);
+    seekToTime(clip.start_sec);
+  }
+
+  function toggleClipSelection(clipId) {
+    setSelectedClipIds((previous) => (previous.includes(clipId) ? previous.filter((id) => id !== clipId) : [...previous, clipId]));
+  }
+
+  function moveClip(clipId, direction) {
+    setSelectedClipIds((previous) => {
+      const index = previous.indexOf(clipId);
+      const nextIndex = index + direction;
+      if (index < 0 || nextIndex < 0 || nextIndex >= previous.length) return previous;
+      const next = [...previous];
+      [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+      return next;
+    });
+  }
+
+  function downloadText(filename, content, type) {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function exportManifest(format) {
+    const exportClips = selectedClips.length ? selectedClips : displayClips;
+    const exportEvents = visibleEvents.filter((event) => exportClips.some((clip) => clip.event_ids?.includes(event.event_id)));
+    if (format === "json") {
+      downloadText(
+        "pitchclipers-events.json",
+        JSON.stringify({ schema_version: "1.0", source: isFixtureMode ? "fixture" : "api", duration_sec: displayDuration, events: exportEvents, clips: exportClips }, null, 2),
+        "application/json",
+      );
+      return;
+    }
+    const rows = ["event_id,class_id,label,timestamp_sec,confidence,clip_start_sec,clip_end_sec"];
+    exportEvents.forEach((event) => {
+      const clip = exportClips.find((item) => item.event_ids?.includes(event.event_id));
+      rows.push([event.event_id, event.class_id, event.label, event.timestamp_sec.toFixed(2), event.confidence.toFixed(3), clip?.start_sec?.toFixed(2) || "", clip?.end_sec?.toFixed(2) || ""].map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","));
+    });
+    downloadText("pitchclipers-events.csv", `${rows.join("\n")}\n`, "text/csv;charset=utf-8");
+  }
+
+  async function startFixtureWorkflow() {
+    const error = validateVideo(selectedFile);
+    setFileError(error);
+    if (error) return;
+
+    setMatch({ match_id: "local-demo", duration_sec: displayDuration, metadata: { match_name: matchName.trim() || selectedFile.name } });
+    setJob({ job_id: "fixture-job", status: "processing" });
+    setClips([]);
+    setEvents([]);
+    setSelectedClipIds([]);
+    setUploadState("uploading");
+    setProcessingState("processing");
+    setProcessingProgress(0);
+    setProcessingLabel("Preparing local fixture");
+    setConnectionMode("fixture");
+    setActivityLog([]);
+    setMessage("Fixture mode uses deterministic demo events; no video leaves this browser.");
+
+    try {
+      const result = await runFixtureProcessing({
+        durationSec: displayDuration,
+        selectedTypeIds: selectedTypeList,
+        onProgress: (progress, label) => {
+          setUploadProgress(progress < 20 ? progress * 5 : 100);
+          setProcessingProgress(progress);
+          setProcessingLabel(label);
+        },
+        onEvent: (event) => setEvents((previous) => [...previous, event]),
+        onLog: (entry) => appendLog(entry.type, entry),
+      });
+      setEvents(result.events);
+      setProcessingState("completed");
+      setProcessingLabel("Fixture processing complete");
+      setUploadState("uploaded");
+      setUploadProgress(100);
+      setProcessingProgress(100);
+      setJob({ job_id: "fixture-job", status: "completed" });
+    } catch (fixtureError) {
+      setProcessingState("failed");
+      setUploadState("failed");
+      setProcessingLabel("Fixture failed");
+      setMessage(fixtureError.message);
+    }
   }
 
   async function startBackendWorkflow() {
@@ -288,6 +409,8 @@ function App() {
     closeSse();
     stopPolling();
     setClips([]);
+    setEvents([]);
+    setSelectedClipIds([]);
     setActivityLog([]);
     setUploadProgress(0);
     setProcessingProgress(null);
@@ -337,6 +460,7 @@ function App() {
       });
 
       setJob(processResponse);
+      if (Array.isArray(processResponse.events)) setEvents(processResponse.events);
       setProcessingState(processResponse.status || "queued");
       setProcessingLabel(processResponse.status === "processing" ? "Processing" : "Queued");
       setProcessingProgress((current) => current ?? 5);
@@ -352,6 +476,11 @@ function App() {
       setProcessingState("failed");
       setProcessingLabel("Failed");
     }
+  }
+
+  function startWorkflow() {
+    if (isFixtureMode) return startFixtureWorkflow();
+    return startBackendWorkflow();
   }
 
   const progressStyle = processingProgress === null ? "progress-fill indeterminate" : "progress-fill";
@@ -383,8 +512,8 @@ function App() {
           <div className="topbar-title">
             <PitchClipersPixelLogo compact className="topbar-logo" />
             <div>
-              <h1>Async Highlight Processing</h1>
-              <p>Original upload, backend windowing, model inference, and incremental clip delivery.</p>
+              <h1>Football Highlight Studio</h1>
+              <p>{isFixtureMode ? "Local fixture workflow for event spotting and clip review." : "Original upload, backend windowing, model inference, and incremental clip delivery."}</p>
             </div>
           </div>
           <div className={`status-pill ${processingState === "completed" ? "ready" : ""}`}>
@@ -393,7 +522,7 @@ function App() {
             ) : (
               <Check size={16} />
             )}
-            {connectionMode === "sse" ? "SSE connected" : connectionMode === "polling" ? "Polling fallback" : "Backend ready"}
+            {isFixtureMode ? "Local fixture mode" : connectionMode === "sse" ? "SSE connected" : connectionMode === "polling" ? "Polling fallback" : "Backend ready"}
           </div>
         </header>
 
@@ -409,12 +538,18 @@ function App() {
                 }}
               >
                 {localVideoUrl ? (
-                  <video src={localVideoUrl} controls onLoadedMetadata={(event) => setVideoDuration(event.currentTarget.duration)} />
+                  <video
+                    ref={videoRef}
+                    src={localVideoUrl}
+                    controls
+                    onLoadedMetadata={(event) => setVideoDuration(event.currentTarget.duration)}
+                    onTimeUpdate={(event) => setCurrentTime(event.currentTarget.currentTime)}
+                  />
                 ) : (
                   <div className="empty-upload">
                     <Upload size={34} />
                     <strong>Select the original match video</strong>
-                    <span>The browser uploads this file once. The backend handles windowing and clips.</span>
+                    <span>{isFixtureMode ? "The file stays in this browser while deterministic demo events are generated." : "The browser uploads this file once. The backend handles windowing and clips."}</span>
                   </div>
                 )}
                 <input
@@ -430,9 +565,9 @@ function App() {
                   <Upload size={16} />
                   Choose video
                 </label>
-                <button className="button primary" onClick={startBackendWorkflow} disabled={!canStart || uploadState === "uploading"}>
+                <button className="button primary" onClick={startWorkflow} disabled={!canStart || uploadState === "uploading"}>
                   {uploadState === "uploading" || uploadState === "initiating" ? <Loader2 className="spin" size={16} /> : <Play size={16} />}
-                  Start backend job
+                  {isFixtureMode ? "Run local fixture" : "Start backend job"}
                 </button>
                 <button className="button ghost" onClick={resetWorkflow}>
                   <RotateCcw size={16} />
@@ -444,26 +579,89 @@ function App() {
                 </div>
               </div>
               {fileError && <p className="error-line">{fileError}</p>}
+              {isFixtureMode && selectedFile && !videoDuration && <p className="hint-line">Loading video metadata before the local run can start…</p>}
+            </section>
+
+            <section className="timeline-panel" aria-label="Match event timeline">
+              <div className="section-heading">
+                <div>
+                  <h2>Event Timeline</h2>
+                  <p>{visibleEvents.length} visible events · confidence threshold {Math.round(threshold * 100)}%</p>
+                </div>
+                <Clock3 size={18} />
+              </div>
+              <div className="timeline-controls">
+                <label className="range-control">
+                  <span>Confidence</span>
+                  <input type="range" min="0" max="1" step="0.01" value={threshold} onChange={(event) => setThreshold(Number(event.target.value))} />
+                  <output>{Math.round(threshold * 100)}%</output>
+                </label>
+                <span className="timeline-time">{formatTime(currentTime)} / {formatTime(displayDuration)}</span>
+              </div>
+              <div
+                className="timeline"
+                role="group"
+                aria-label="Match timeline"
+                tabIndex="0"
+                onClick={(event) => {
+                  const bounds = event.currentTarget.getBoundingClientRect();
+                  seekToTime(((event.clientX - bounds.left) / bounds.width) * displayDuration);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowLeft") seekToTime(currentTime - 5);
+                  if (event.key === "ArrowRight") seekToTime(currentTime + 5);
+                }}
+              >
+                {visibleEvents.map((event) => (
+                  <button
+                    type="button"
+                    className={`marker ${selectedEventId === event.event_id ? "active" : ""}`}
+                    key={event.event_id}
+                    title={`${event.label} · ${formatTime(event.timestamp_sec)} · ${Math.round(event.confidence * 100)}%`}
+                    aria-label={`${event.label} at ${formatTime(event.timestamp_sec)}`}
+                    style={{ left: `${(event.timestamp_sec / displayDuration) * 100}%`, backgroundColor: eventColor(event.class_id, eventTypes) }}
+                    onClick={(clickEvent) => {
+                      clickEvent.stopPropagation();
+                      selectEvent(event);
+                    }}
+                  />
+                ))}
+                <span className="playhead" style={{ left: `${(currentTime / displayDuration) * 100}%` }} aria-hidden="true" />
+                <div className="timeline-axis"><span>00:00:00</span><span>{formatTime(displayDuration / 2)}</span><span>{formatTime(displayDuration)}</span></div>
+              </div>
+              {selectedEvent ? (
+                <div className="event-detail">
+                  <div>
+                    <span className="detail-kicker">Selected event</span>
+                    <strong>{selectedEvent.label}</strong>
+                  </div>
+                  <div><span>Timestamp</span><strong>{formatTime(selectedEvent.timestamp_sec)}</strong></div>
+                  <div><span>Confidence</span><strong>{Math.round(selectedEvent.confidence * 100)}%</strong></div>
+                  <div><span>Clip window</span><strong>{formatTime(buildClipCandidates([selectedEvent], displayDuration)[0]?.start_sec)} - {formatTime(buildClipCandidates([selectedEvent], displayDuration)[0]?.end_sec)}</strong></div>
+                </div>
+              ) : <p className="muted-line timeline-empty">Select a marker to inspect its event-centered window.</p>}
             </section>
 
             <section className="events-panel" aria-label="Generated clips">
               <div className="section-heading">
                 <div>
-                  <h2>Generated Clips</h2>
+                  <h2>Clip Candidates</h2>
                   <p>
-                    {clips.length} total · {readyClips.length} ready · clips appear as backend `clip_ready` events arrive
+                    {displayClips.length} visible · {selectedClips.length} selected · {isFixtureMode ? "generated locally from fixture events" : `${clips.length} total · ${readyClips.length} ready`}
                   </p>
                 </div>
-                <Clock3 size={18} />
+                <Film size={18} />
               </div>
 
               <div className="clip-grid">
-                {clips.length ? (
-                  clips.map((clip) => (
-                    <article className={`clip-card ${clip.status}`} key={clip.clip_id}>
+                {displayClips.length ? (
+                  displayClips.map((clip) => (
+                    <article className={`clip-card ${clip.status} ${selectedClipIds.includes(clip.clip_id) ? "selected" : ""}`} key={clip.clip_id} onClick={() => selectClip(clip)}>
                       <div className="clip-media">
-                        {clip.status === "ready" ? (
+                        {clip.status === "ready" && clip.video_url ? (
                           <video src={clipPlaybackUrl(clip)} poster={clipThumbnailUrl(clip) || undefined} controls preload="metadata" />
+                        ) : clip.status === "ready" ? (
+                          <div className="clip-placeholder fixture-preview"><Play size={22} /><span>Preview in player</span></div>
                         ) : (
                           <div className="clip-placeholder">
                             {clip.status === "failed" ? <AlertTriangle size={22} /> : <Loader2 className="spin" size={22} />}
@@ -473,7 +671,10 @@ function App() {
                       </div>
                       <div className="clip-body">
                         <div className="clip-title-row">
-                          <strong>{clip.event_types?.join(", ") || "highlight"}</strong>
+                          <label className="clip-select" onClick={(event) => event.stopPropagation()}>
+                            <input type="checkbox" checked={selectedClipIds.includes(clip.clip_id)} onChange={() => toggleClipSelection(clip.clip_id)} aria-label={`Select ${clip.label || "clip"}`} />
+                            <strong>{clip.event_types?.join(", ") || clip.label || "highlight"}</strong>
+                          </label>
                           <span>{clip.score === null || clip.score === undefined ? "score n/a" : `${Math.round(Number(clip.score) * 100)}%`}</span>
                         </div>
                         <p>
@@ -486,6 +687,11 @@ function App() {
                             </span>
                           ))}
                         </div>
+                        {selectedClipIds.includes(clip.clip_id) && <div className="clip-order-controls" onClick={(event) => event.stopPropagation()}>
+                          <span>Export order {selectedClipIds.indexOf(clip.clip_id) + 1}</span>
+                          <button type="button" className="icon-button" onClick={() => moveClip(clip.clip_id, -1)} disabled={selectedClipIds.indexOf(clip.clip_id) === 0} aria-label="Move clip earlier"><ChevronUp size={15} /></button>
+                          <button type="button" className="icon-button" onClick={() => moveClip(clip.clip_id, 1)} disabled={selectedClipIds.indexOf(clip.clip_id) === selectedClipIds.length - 1} aria-label="Move clip later"><ChevronDown size={15} /></button>
+                        </div>}
                       </div>
                     </article>
                   ))
@@ -505,7 +711,7 @@ function App() {
               <div className="section-heading">
                 <div>
                   <h2>Match Metadata</h2>
-                  <p>Sent with `/api/matches/initiate`.</p>
+                  <p>{isFixtureMode ? "Used by the local fixture adapter." : "Sent with `/api/matches/initiate`."}</p>
                 </div>
                 <Video size={18} />
               </div>
@@ -541,7 +747,7 @@ function App() {
                 </div>
                 <Flag size={18} />
               </div>
-              <div className="event-type-grid async-event-grid">
+                <div className="event-type-grid async-event-grid">
                 {eventTypes.map((event) => (
                   <label key={event.id} className="check-row">
                     <input type="checkbox" checked={selectedTypes.has(event.id)} onChange={() => toggleEventType(event.id)} />
@@ -550,12 +756,7 @@ function App() {
                   </label>
                 ))}
               </div>
-              <div className="add-event-row">
-                <input value={customEventType} placeholder="Add event type" onChange={(event) => setCustomEventType(event.target.value)} />
-                <button className="icon-button" onClick={addCustomEventType} aria-label="Add event type">
-                  <Plus size={16} />
-                </button>
-              </div>
+              <p className="muted-line">The first milestone targets six SoccerNet event classes.</p>
             </section>
 
             <section className="control-panel" aria-label="Job progress">
@@ -589,6 +790,20 @@ function App() {
                 <code>{match?.match_id || "not created"}</code>
                 <span>job_id</span>
                 <code>{job?.job_id || "not started"}</code>
+              </div>
+            </section>
+
+            <section className="control-panel" aria-label="Export results">
+              <div className="section-heading">
+                <div>
+                  <h2>Export</h2>
+                  <p>{selectedClips.length ? `${selectedClips.length} selected clips` : "All visible clips if none are selected"}</p>
+                </div>
+                <Download size={18} />
+              </div>
+              <div className="export-actions">
+                <button className="button secondary compact" onClick={() => exportManifest("json")} disabled={!displayClips.length}><Download size={15} /> JSON manifest</button>
+                <button className="button ghost compact" onClick={() => exportManifest("csv")} disabled={!displayClips.length}><Download size={15} /> CSV manifest</button>
               </div>
             </section>
 

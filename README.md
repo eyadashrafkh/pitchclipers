@@ -45,6 +45,19 @@ Create a production build with:
 npm run build
 ```
 
+## Local fixture mode
+
+The default local mode runs entirely in the browser. Choose a video to preview it, select one or more of the six supported event classes, and click **Run local fixture**. The deterministic fixture adapter generates demo events and clip windows without uploading the video or requiring a model checkpoint.
+
+The local workflow supports confidence filtering, timeline seeking, clip selection and ordering, and JSON/CSV manifest export. Fixture results are for interface testing and are labelled as such; they are not model predictions.
+
+To switch to the asynchronous backend workflow, set the following in `.env`:
+
+```bash
+VITE_APP_MODE=api
+VITE_BACKEND_API_URL=http://127.0.0.1:8000
+```
+
 ## Backend configuration
 
 By default, Vite proxies `/api` requests to `http://127.0.0.1:8000`. To use another backend, copy `.env.example` to `.env` and set:
@@ -53,7 +66,7 @@ By default, Vite proxies `/api` requests to `http://127.0.0.1:8000`. To use anot
 VITE_BACKEND_API_URL=http://your-backend-host:8000
 ```
 
-The frontend expects endpoints for:
+The API mode expects endpoints for:
 
 - initiating a match-processing job;
 - uploading the corresponding video;
