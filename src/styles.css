@@ -350,6 +350,12 @@ button:disabled {
   font-weight: 700;
 }
 
+.hint-line {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .timeline-panel,
 .events-panel,
 .control-panel {
@@ -376,6 +382,43 @@ button:disabled {
   background: var(--surface-2);
   border: 1px solid var(--border);
   padding: 26px 14px 14px;
+}
+
+.timeline-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: -2px 0 12px;
+}
+
+.range-control {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: auto minmax(100px, 1fr) 48px;
+  gap: 10px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.range-control input {
+  width: 100%;
+}
+
+.range-control output {
+  color: var(--ink);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-time {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .timeline::before {
@@ -406,6 +449,17 @@ button:disabled {
   height: 36px;
 }
 
+.playhead {
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  width: 2px;
+  background: var(--ink);
+  transform: translateX(-50%);
+  pointer-events: none;
+  opacity: 0.75;
+}
+
 .timeline-axis {
   position: absolute;
   left: 14px;
@@ -415,6 +469,47 @@ button:disabled {
   justify-content: space-between;
   color: var(--muted);
   font-size: 11px;
+}
+
+.event-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid #c8dbff;
+  border-radius: 8px;
+  background: #f4f8ff;
+}
+
+.event-detail > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.event-detail span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.event-detail strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.event-detail .detail-kicker {
+  color: #0f4bb4;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.timeline-empty {
+  margin: 10px 0 0;
 }
 
 .table-wrap {
@@ -666,6 +761,11 @@ tr:last-child td {
   border-color: #bce7ca;
 }
 
+.clip-card.selected {
+  border-color: #8bb7ff;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+
 .clip-card.failed {
   border-color: #fecdd3;
 }
@@ -727,6 +827,17 @@ tr:last-child td {
   text-transform: capitalize;
 }
 
+.clip-select {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.clip-select input {
+  flex: 0 0 auto;
+}
+
 .clip-title-row span,
 .clip-body p {
   margin: 0;
@@ -747,6 +858,32 @@ tr:last-child td {
   color: #334155;
   font-size: 11px;
   font-weight: 800;
+}
+
+.fixture-preview {
+  min-height: 100%;
+  color: #dbeafe;
+}
+
+.clip-order-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.clip-order-controls .icon-button {
+  width: 28px;
+  height: 28px;
+}
+
+.export-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
 }
 
 .range-row {
@@ -1132,28 +1269,36 @@ input[type="checkbox"] {
     order: 1;
   }
 
-  .control-column .control-panel:nth-child(1) {
+  .timeline-panel {
     order: 2;
   }
 
-  .control-column .control-panel:nth-child(2) {
+  .control-column .control-panel:nth-child(1) {
     order: 3;
   }
 
-  .control-column .control-panel:nth-child(3) {
+  .control-column .control-panel:nth-child(2) {
     order: 4;
   }
 
-  .control-column .control-panel:nth-child(4) {
+  .control-column .control-panel:nth-child(3) {
     order: 5;
   }
 
-  .events-panel {
+  .control-column .control-panel:nth-child(4) {
     order: 6;
   }
 
-  .message {
+  .control-column .control-panel:nth-child(5) {
     order: 7;
+  }
+
+  .events-panel {
+    order: 8;
+  }
+
+  .message {
+    order: 9;
   }
 
   .video-panel,
@@ -1177,6 +1322,24 @@ input[type="checkbox"] {
 
   .event-type-grid,
   .split-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .timeline-controls,
+  .event-detail {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+
+  .timeline-controls {
+    gap: 8px;
+  }
+
+  .timeline-time {
+    text-align: right;
+  }
+
+  .export-actions {
     grid-template-columns: 1fr;
   }
 
